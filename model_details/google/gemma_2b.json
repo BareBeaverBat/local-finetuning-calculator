@@ -1,16 +1,18 @@
 {
-  "num_embed_params": 524550144,
-  "num_non_embed_params": 1981884416,
-  "__comment_num_non_embed_params": "todo use num_non_embed_params to sanity-check the computation of that from # layers, d_model, feed-forward hidden dim, num query heads, head size, vocab size",
-  "num_layers": 18,
-  "model_dim": 2048,
-  "feed_forward_hidden_dim": 32768,
-  "num_query_heads": 8,
-  "num_kv_heads": 1,
-  "__comment_num_kv_heads": "keeping this option as numeric so this format can describe multi-query, grouped-query, and multi-head attention models without an enum param for switchng ",
-  "head_size": 256,
-  "vocab_size": 256128,
-  "__comment_todo1": "todo track what the attention-related model components are called for this model, i.e. q_proj, k_proj, v_proj, o_proj; also gate_proj???",
-  "__comment_todo2": "todo track what the non-attention-related model components are called for this model (i.e. MLP up_proj/down_proj, maybe also embedding modules??)"
-
+    "name": "gemma_2b",
+    "num_embed_params": 524550144,
+    "num_non_embed_params": 1981884416,
+    "__comment_num_non_embed_params": "todo use num_non_embed_params to sanity-check the computation of that from # layers, d_model, feed-forward hidden dim, num query heads, head size, vocab size",
+    "num_layers": 18,
+    "model_dim": 2048,
+    "feed_forward_hidden_dim": 32768,
+    "num_query_heads": 8,
+    "num_kv_heads": 1,
+    "__comment_num_kv_heads": "keeping this option as numeric so this format can describe multi-query, grouped-query, and multi-head attention models without an enum param for switchng ",
+    "head_size": 256,
+    "vocab_size": 256128,
+    "embed_module_name": "embed_tokens",
+    "attn_module_names": ["q_proj", "k_proj", "v_proj", "o_proj"],
+    "mlp_module_names": ["gate_proj", "up_proj", "down_proj"],
+    "is_mlp_gated": true
 }

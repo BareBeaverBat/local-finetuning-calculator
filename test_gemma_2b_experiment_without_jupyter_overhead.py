@@ -5,17 +5,23 @@ from datasets import load_dataset, Dataset
 import torch
 
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, TrainingArguments, \
+    PreTrainedModel
 from peft import LoraConfig
 from trl import SFTTrainer
 from trl.trainer import ConstantLengthDataset
 
+from torchinfo import summary
+
 print("initial gpu memory usage is " + torch.cuda.memory_summary(torch.device("cuda:0")))
 
 print("start loading dataset at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-eli5: Dataset = load_dataset("eli5_category", split="train[:5000]", trust_remote_code=True)
+eli5: Dataset = load_dataset("eli5_category", split="train[:1500]", trust_remote_code=True)
 print("finish loading dataset at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-print("gpu memory usage after loading dataset is " + torch.cuda.memory_summary(torch.device("cuda:0")))
+# print("gpu memory usage after loading dataset is " + torch.cuda.memory_summary(torch.device("cuda:0")))
+
+#loading dataset when running this script directly from wsl cli has wildly differing runtimes, from 1 sec to 6min to 13min, then 13min again,
+# iirc in wsl-connected jupyter notebook it was taking something like 20min
 
 
 eli5_train_test = eli5.train_test_split(test_size=0.2)
@@ -55,11 +61,11 @@ def fix_data(record):
 
 eli5_train_test = eli5_train_test.map(fix_data)
 
-print("gpu memory usage before loading tokenizer is " + torch.cuda.memory_summary(torch.device("cuda:0")))
+# print("gpu memory usage before loading tokenizer is " + torch.cuda.memory_summary(torch.device("cuda:0")))
 print("start loading tokenizer at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 print("finish loading tokenizer at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-print("gpu memory usage after loading tokenizer is " + torch.cuda.memory_summary(torch.device("cuda:0")))
+# print("gpu memory usage after loading tokenizer is " + torch.cuda.memory_summary(torch.device("cuda:0")))
 
 fixed_len_train_dset =  ConstantLengthDataset(tokenizer, eli5_train_test["train"], "answers.text", seq_length=seq_len)
 fixed_len_eval_dset =  ConstantLengthDataset(tokenizer, eli5_train_test["test"], "answers.text", seq_length=seq_len)
@@ -67,13 +73,26 @@ fixed_len_eval_dset =  ConstantLengthDataset(tokenizer, eli5_train_test["test"],
 torch.cuda.empty_cache()
 print("gpu memory usage after clearing cache is " + torch.cuda.memory_summary(torch.device("cuda:0")))
 
+torch.cuda.memory._record_memory_history()
 
-with torch.profiler.profile(with_stack=True,
-                            profile_memory=True,
-                            record_shapes=True) as prof:
+with torch.profiler.profile(
+        with_modules=True,
+         with_stack=True,
+        profile_memory=True,
+        record_shapes=True
+                            ) as prof:
     print("start loading model at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
-    model = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=bnb_config, device_map="auto")
+    model : PreTrainedModel = AutoModelForCausalLM.from_pretrained(model_id, quantization_config=bnb_config, device_map="auto")
     print("finish loading model at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+
+    print("printing modules in model")
+    print(model.modules().__next__())
+    # for module_name in model.modules():# might revisit this if other models besides gemma 2b don't have such a nicely descriptive first model, but unlikely
+    #     print(module_name)
+    #print("summary of model:")
+    #print(summary(model, input_size=(256128, seq_len), device=None, depth=10, col_names=["input_size", "output_size", "num_params", "kernel_size", "trainable"]))
+    #todo when next try with jupyter notebook, experiment here with input_data=fixed_len_train_dset.dataset or something
+
     print("start creating trainer at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
     trainer = SFTTrainer(
         model=model,
@@ -92,7 +111,8 @@ with torch.profiler.profile(with_stack=True,
         ),
         packing=True,
         # dataset_text_field="answers.text",
-        peft_config=lora_config
+        peft_config=lora_config,
+        max_seq_length=seq_len
     )
     print("finish creating trainer at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
@@ -102,10 +122,36 @@ with torch.profiler.profile(with_stack=True,
 
     pass
 
+import os
+print("cwd: " + os.getcwd())
+
+result_files_ts_str = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+
+print("about to dump memory snapshot at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+torch.cuda.memory._dump_snapshot(f"gemma2b_mem_snapshot_{result_files_ts_str}.pickle")
+print("finished dumping memory snapshot at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+
+print("about to dump memory timeline summary json at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+prof.export_memory_timeline(f"gemma2b_mem_timeline_summary_{result_files_ts_str}.json")
+print("finished dumping memory timeline summary json and about to dump memory timeline details/raw json at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+prof.export_memory_timeline(f"gemma2b_mem_timeline_details_{result_files_ts_str}.raw.json")
+print("finished dumping memory timeline details/raw json and about to dump memory timeline static visualization at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+prof.export_memory_timeline(f"gemma2b_mem_timeline_static_viz_{result_files_ts_str}.html")
+print("finished dumping memory timeline static visualization about to create nicer (I think interactive) visualization of memory profiling at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
 from torch.cuda._memory_viz import profile_plot
-with open('/mnt/c/Users/ssili/PycharmProjects/local-finetuning-calculator/gemma2b_1st_mem_profile.html', 'w') as f:
+with open(f'gemma2b_mem_profile_{result_files_ts_str}.html', 'w') as f:
     f.write(profile_plot(prof))
+
+    #when with_stack, profile_memory, and record_shapes were all True; and dataset size was 5k (leading to 10 hills in memory snapshot- 10 epochs):
+    # profile_plot() ran for almost 3 hours and then was killed (by the wsl shell? by the python interpreter? not sure)
+
+    # when I tried setting with_stack and record_shapes to False to hopefully speed it up, I got error that memory profiling requires them. oops
+
+
+
+print("finished creating visualization of memory profiling at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+
 
 # print("gpu memory usage before loading model is " + torch.cuda.memory_summary(torch.device("cuda:0")))
 # print("start loading model at " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
