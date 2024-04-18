@@ -72,18 +72,19 @@ def predict_frozen_weights_mem(model_data: ModelData, quantization_level: Quanti
     return frozen_weights_mem
 
 
-def predict_trainable_weights_mem(num_layers: int, num_q_heads: int, num_kv_heads: int, model_dim: int, qkv_dim: int,
-                                  mlp_dim: int, num_classes: int, lora_r: int, lora_attn: bool, lora_mlp: bool):
+def predict_trainable_weights_mem(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
+                                  lora_mlp: bool):
     # depends on which parts of the model you're applying lora to,
     # and choices about quantization of weights
     # todo double check whether this is still true for lora weights when doing quantization of the rest
     # particularly concerned b/c of the bitsandbytes setting about compute dtype being float16
     bytes_per_weight = 4  # or 2??
 
+    bytes_from_trainable_weights = bytes_per_weight*calc_num_trainable_weights(model_data, lora_r, lora_embed, lora_attn, lora_mlp)
     # todo use calc_num_trainable_weights()
     # don't inline it b/c that can be used again by predict_optimizer_states_mem
 
-    return -1.0
+    return bytes_from_trainable_weights
 
 
 def predict_optimizer_states_mem():
@@ -98,8 +99,8 @@ def predict_gradients_mem():
     # depends on # trainable parameters, batch size, and whether/how-much gradients are quantized (not recommended)
     # ALSO SEQUENCE LENGTH
     # might want to support gradient accumulation (need to check- it might have exactly zero effect on peak vram usage)
-    return -1.0
 
-# todo consider later whether it makes sense to break these up further based on different architecture components
-# like attention, MLP, embedding,
-# If so, how to do that elegantly/DRY-ly?
+    #above analysis is all based on assuming that peaks are within a batch, but visualization indicates that
+    # peak is at middle of _epoch_, much scarier (also much harder to guess how the trainer will decide on number of
+    # minibatches in an epoch)
+    return -1.0
