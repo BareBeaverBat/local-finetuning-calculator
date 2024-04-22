@@ -108,6 +108,17 @@ with torch.profiler.profile(
             logging_steps=1,
             output_dir="outputs",
             optim="paged_adamw_32bit"#can try paged_adamw_8bit in absolute worst case
+
+            # todo explore the below training args, including looking at the source code
+            #  (e.g. for gradient_checkpointing_enable() )
+            # gradient_checkpointing (`bool`, *optional*, defaults to `False`):
+            # If True, use gradient checkpointing to save memory at the expense of slower backward pass.
+            # gradient_checkpointing_kwargs (`dict`, *optional*, defaults to `None`):
+            # Key word arguments to be passed to the `gradient_checkpointing_enable` method.
+            # "help": "Gradient checkpointing key word arguments such as `use_reentrant`. Will be passed to
+            # `torch.utils.checkpoint.checkpoint` through `model.gradient_checkpointing_enable`."
+            # https://pytorch.org/docs/stable/checkpoint.html
+
         ),
         packing=True,
         # dataset_text_field="answers.text",
