@@ -103,3 +103,10 @@ def predict_gradients_mem():
 # todo consider later whether it makes sense to break these up further based on different architecture components
 # like attention, MLP, embedding,
 # If so, how to do that elegantly/DRY-ly?
+
+
+#todo final predictor should have fudge factor for misc tiny tensors which were too numerous and small to be worth tracking individually
+# roughly 20-40mib, based on gemma2b analysis (but double check that with gemma7b and llama2-7b, again keeping detail slider near middle in pytorch profiler visualization)
+
+
+
