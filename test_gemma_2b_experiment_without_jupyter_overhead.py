@@ -106,7 +106,7 @@ with torch.profiler.profile(
             learning_rate=2e-4,
             fp16=True,
             logging_steps=1,
-            output_dir="outputs",
+            output_dir="profiler_results",
             optim="paged_adamw_32bit"#can try paged_adamw_8bit in absolute worst case
 
             # todo explore the below training args, including looking at the source code
@@ -185,7 +185,7 @@ print("finished creating visualization of memory profiling at " + time.strftime(
 #         learning_rate=2e-4,
 #         fp16=True,
 #         logging_steps=1,
-#         output_dir="outputs",
+#         output_dir="profiler_results",
 #         optim="paged_adamw_32bit"#can try paged_adamw_8bit in absolute worst case
 #     ),
 #     packing=True,
