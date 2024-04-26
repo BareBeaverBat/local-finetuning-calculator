@@ -105,12 +105,12 @@ def predict_gradients_mem():
     # minibatches in an epoch)
     return -1.0
 
-# TODO need to figure out how to predict amount of activation memory stored up by middle of EPOCH (not mini-batch)?
-#  with gradient checkpointing, this seems to get even more complicated. no longer the middle of the epoch, but maybe ~1/3 through; :(
+
+# todo with gradient checkpointing, this seems to get even more complicated. no longer the middle of the epoch, but maybe ~1/3 through or else nearly at the end
 
 
 #todo final predictor should have fudge factor for misc tiny tensors which were too numerous and small to be worth tracking individually
-# roughly 20-40mib, based on gemma2b analysis (but double check that with gemma7b and llama2-7b, again keeping detail slider near middle in pytorch profiler visualization)
+# roughly 20-40mib, based on gemma2b analysis (but double check that with gemma7b and llama2-7b, again keeping detail slider in pytorch profiler visualization at value 50000)
 
 
 
