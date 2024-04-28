@@ -109,8 +109,12 @@ def predict_gradients_mem():
 # todo with gradient checkpointing, this seems to get even more complicated. no longer the middle of the epoch, but maybe ~1/3 through or else nearly at the end
 
 
-#todo final predictor should have fudge factor for misc tiny tensors which were too numerous and small to be worth tracking individually
-# roughly 20-40mib, based on gemma2b analysis (but double check that with gemma7b and llama2-7b, again keeping detail slider in pytorch profiler visualization at value 50000)
+#todo final predictor might need fudge factor for the persistent peak calculation errors that are recorded in the experiment results spreadsheet
+
+#todo don't forget to use pytorch to check existing vram usage in addition to current gpu max memory capacity
+#todo final predictor should start by checking the "peak at end of quantization" candidate and seeing if that exceeds available vram
+
+
 
 
 
