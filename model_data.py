@@ -21,6 +21,9 @@ class ModelData:
     embed_module_name: str
     attn_module_names: List[str]
     mlp_module_names: List[str]
+    # this currently assumes the gating's elementwise product is done in the hidden dimension, before down projecting
+    #  back to the model dimension
+    is_mlp_gated: bool
     initial_massive_params_chunk_size: int
     total_size_of_frozen_weight_small_tensors: int
     persistent_massive_params_chunk_size: int

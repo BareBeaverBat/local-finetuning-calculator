@@ -18,30 +18,37 @@ from model_data import ModelData, QuantizationLevels
 # Also only considering 4-bit quantization of frozen model weights, use of LoRA, and gradient checkpointing
 
 def calc_num_trainable_weights(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
-                               lora_mlp: bool) -> int:
-    trainable_param_count: int = 0
+                               lora_mlp: bool) -> float:
+    trainable_param_count: float = 0.0
 
     if lora_embed:
-        trainable_param_count += model_data.vocab_size * lora_r + lora_r * model_data.model_dim
+        trainable_param_count += (model_data.vocab_size * lora_r + lora_r * model_data.model_dim)
 
     if lora_attn:
-        train_params_per_attn_block_in_the_out_proj = (
-                model_data.num_query_heads * model_data.head_size * lora_r + lora_r * model_data.model_dim)
-        trainable_param_count_per_attn_block = (
-                (model_data.model_dim * lora_r + lora_r * model_data.head_size)
-                * (model_data.num_query_heads + 2 * model_data.num_kv_heads)
-                + train_params_per_attn_block_in_the_out_proj)
-        trainable_param_count += trainable_param_count_per_attn_block * model_data.num_layers
+        out_proj_adapter_size = model_data.num_query_heads * model_data.head_size * lora_r + lora_r * model_data.model_dim
+        query_proj_adapter_size = model_data.model_dim * lora_r + lora_r * model_data.head_size * model_data.num_query_heads
+        key_proj_adapter_size = model_data.model_dim * lora_r + lora_r * model_data.head_size * model_data.num_kv_heads
+        value_proj_adapter_size = model_data.model_dim * lora_r + lora_r * model_data.head_size * model_data.num_kv_heads
+        attn_block_adapters_size = query_proj_adapter_size + key_proj_adapter_size + value_proj_adapter_size + out_proj_adapter_size
+        trainable_param_count += attn_block_adapters_size * model_data.num_layers
 
     if lora_mlp:
-        trainable_param_count += model_data.num_layers * (
-                (model_data.model_dim * lora_r + lora_r * model_data.feed_forward_hidden_dim)
-                + (model_data.feed_forward_hidden_dim * lora_r + lora_r * model_data.model_dim))
+        mlp_block_size: float = 0
+        hidden_layer_result_width = model_data.feed_forward_hidden_dim
+        if model_data.is_mlp_gated:
+            hidden_layer_result_width /= 2
+            #adding the gate proj
+            mlp_block_size += model_data.model_dim*lora_r + lora_r*hidden_layer_result_width
+        #up proj and down proj
+        mlp_block_size += (model_data.model_dim * lora_r + lora_r * hidden_layer_result_width
+                           + hidden_layer_result_width*lora_r + lora_r*model_data.model_dim)
+        trainable_param_count += model_data.num_layers * mlp_block_size
+        #the gating thing does matter!!! it affects the size of the down projection adapter!!
 
     return trainable_param_count
 
 
-def predict_activations_mem() -> int:
+def predict_activations_mem() -> float:
     # batch size and sequence length are important factors here
     # pytorch/transformers defaults to recomputing activations to save memory/io iff you set gradient_checkpointing=True
     # which, based on the medium post linked by the docs for that, seems like it probably only saves the activations
@@ -74,20 +81,19 @@ def predict_frozen_weights_mem(model_data: ModelData, quantization_level: Quanti
     return frozen_weights_mem
 
 
-def predict_trainable_weights_mem(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
-                                  lora_mlp: bool) -> int:
-    # depends on which parts of the model you're applying lora to,
-    # and choices about quantization of weights
-    # todo double check whether this is still true for lora weights when doing quantization of the rest
-    # particularly concerned b/c of the bitsandbytes setting about compute dtype being float16
-    bytes_per_weight = 4  # or 2??
+# todo check whether the tiny (8 or 12 KiB) params tensors have the same count in every run of a particular model type
+#  or whether they vary with the other configuration options like lora-r, lora-embed, lora-attn, and lora-mlp
+#  if the former, their total size should be measured and added to each model's details json file, then used here
 
+def predict_trainable_weights_mem(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
+                                  lora_mlp: bool) -> float:
+    bytes_per_weight = 4
     bytes_from_trainable_weights = bytes_per_weight * calc_num_trainable_weights(model_data, lora_r, lora_embed,
                                                                                  lora_attn, lora_mlp)
     return bytes_from_trainable_weights
 
 
-def predict_optimizer_states_mem() -> int:
+def predict_optimizer_states_mem() -> float:
     # depends on optimizer choice, # trainable parameters, and choices about quantization of optimizer states
 
     # one article seemed to claim that a second copy of the current parameter value was part of the optimizer states for each parameter
@@ -106,6 +112,7 @@ def predict_gradients_mem() -> int:
 
     return -1
 
+
 def measure_vram_capacity() -> int:
     return torch.cuda.mem_get_info()[0]
 
@@ -118,7 +125,8 @@ def calculate_quantization_peak(model_data: ModelData) -> int:
     """
     return model_data.initial_massive_params_chunk_size + model_data.total_size_of_frozen_weight_small_tensors + model_data.persistent_massive_params_chunk_size
 
-#todo make helper method for the total size of tensors that are present for all peaks after the quantization peak
+
+# todo make helper method for the total size of tensors that are present for all peaks after the quantization peak
 # frozen weights tensors, persistent massive params chunk, trainable params, and optimizer state
 
 
@@ -128,7 +136,7 @@ def calculate_quantization_peak(model_data: ModelData) -> int:
 
 def calculate_forward_pass_highest_layer_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
                                               lora_mlp: bool,
-                                              sequence_len: int, batch_size: int) -> int:
+                                              sequence_len: int, batch_size: int) -> float:
     """
     This is the peak from todo finish this explanation before delivery
     :param model_data: information about the model being fine-tuned
@@ -148,7 +156,7 @@ def calculate_forward_pass_highest_layer_peak(model_data: ModelData, lora_r: int
 
 def calculate_central_activations_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
                                        lora_mlp: bool,
-                                       sequence_len: int, batch_size: int) -> int:
+                                       sequence_len: int, batch_size: int) -> float:
     """
     This is the peak from stacked activations blocks in between the processing of the highest layer for the forward
     pass and the processing of the highest layer for the backward pass
@@ -167,7 +175,7 @@ def calculate_central_activations_peak(model_data: ModelData, lora_r: int, lora_
 
 def calculate_central_autograd_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
                                     lora_mlp: bool,
-                                    sequence_len: int, batch_size: int) -> int:
+                                    sequence_len: int, batch_size: int) -> float:
     """
     This is the peak from stacked autograd blocks (on top of a big activations block) in between the processing of the
     highest layer for the forward pass and the processing of the highest layer for the backward pass
@@ -187,7 +195,7 @@ def calculate_central_autograd_peak(model_data: ModelData, lora_r: int, lora_emb
 
 def calculate_backward_pass_highest_layer_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
                                                lora_mlp: bool,
-                                               sequence_len: int, batch_size: int) -> int:
+                                               sequence_len: int, batch_size: int) -> float:
     """
     todo at least document/explain this before delivery
     :param model_data: information about the model being fine-tuned
@@ -205,7 +213,7 @@ def calculate_backward_pass_highest_layer_peak(model_data: ModelData, lora_r: in
 
 def calculate_backward_pass_lowest_layer_mid_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
                                                   lora_mlp: bool,
-                                                  sequence_len: int, batch_size: int) -> int:
+                                                  sequence_len: int, batch_size: int) -> float:
     """
     todo document/explain this before delivery
     :param model_data: information about the model being fine-tuned
@@ -223,7 +231,7 @@ def calculate_backward_pass_lowest_layer_mid_peak(model_data: ModelData, lora_r:
 
 def calculate_backward_pass_lowest_layer_late_peak(model_data: ModelData, lora_r: int, lora_embed: bool,
                                                    lora_attn: bool, lora_mlp: bool,
-                                                   sequence_len: int, batch_size: int) -> int:
+                                                   sequence_len: int, batch_size: int) -> float:
     """
     todo at least document/explain this before delivery
     :param model_data: information about the model being fine-tuned
@@ -246,7 +254,7 @@ def calculate_backward_pass_lowest_layer_late_peak(model_data: ModelData, lora_r
 
 def calculate_end_of_batch_autograd_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
                                          lora_mlp: bool,
-                                         sequence_len: int, batch_size: int) -> int:
+                                         sequence_len: int, batch_size: int) -> float:
     """
     todo at least document/explain this before delivery
     :param model_data: information about the model being fine-tuned
@@ -263,6 +271,7 @@ def calculate_end_of_batch_autograd_peak(model_data: ModelData, lora_r: int, lor
     else:
         return -1  # todo implement this in future, after gathering more data
 
+
 def calc_config_vram_utilization(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool, lora_mlp: bool,
                                  sequence_len: int, batch_size: int) -> float:
     available_vram = measure_vram_capacity()
@@ -273,8 +282,8 @@ def calc_config_vram_utilization(model_data: ModelData, lora_r: int, lora_embed:
 
 # skips quantization peak because that isn't specific to a particular configuration (and so is checked separately in the main function)
 def predict_peak_vram_usage(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool, lora_mlp: bool,
-                            sequence_len: int, batch_size: int) -> int:
-    return int(max(
+                            sequence_len: int, batch_size: int) -> float:
+    return max(
         calculate_forward_pass_highest_layer_peak(model_data, lora_r, lora_embed, lora_attn, lora_mlp, sequence_len,
                                                   batch_size),
         calculate_central_activations_peak(model_data, lora_r, lora_embed, lora_attn, lora_mlp, sequence_len,
@@ -288,7 +297,7 @@ def predict_peak_vram_usage(model_data: ModelData, lora_r: int, lora_embed: bool
                                                        sequence_len, batch_size),
         calculate_end_of_batch_autograd_peak(model_data, lora_r, lora_embed, lora_attn, lora_mlp, sequence_len,
                                              batch_size)
-    ))
+    )
 
 
 @dataclasses.dataclass
@@ -313,9 +322,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="Predict peak VRAM usage for a given model and LoRA settings")
     parser.add_argument("model", required=True, type=str,
-                    help="The org and type of the model to predict VRAM usage for (e.g. google/gemma_2b for the 2b "
-                         "size of one of Google's Gemma models or, once supported, meta_llama/llama3_8b for the 8b "
-                         "size of Meta's Llama3")
+                        help="The org and type of the model to predict VRAM usage for (e.g. google/gemma_2b for the 2b "
+                             "size of one of Google's Gemma models or, once supported, meta_llama/llama3_8b for the 8b "
+                             "size of Meta's Llama3")
     parser.add_argument("-r", "--lora_r", type=int, help="The rank value to use for LoRA matrices")
     parser.add_argument("-e", "--lora_embed", type=bool,
                         help="Whether to apply LoRA to the embedding matrix (if not specified, report will try both "
@@ -350,7 +359,7 @@ def main():
     batch_size_candidates: List[int] = [args.batch_size] if args.batch_size is not None else batch_size_possibilities
 
     free_vram, total_vram = torch.cuda.mem_get_info()
-    existing_vram_usage = total_vram-free_vram
+    existing_vram_usage = total_vram - free_vram
     print(f"{existing_vram_usage} bytes of VRAM are already in use, out of max GPU capacity of {total_vram} bytes")
 
     quantization_peak = calculate_quantization_peak(model_data)
@@ -407,13 +416,10 @@ def main():
 
 
 if __name__ == "__main__":
-
-
-    # todo test predict_trainable_weights_mem() against collected data for gemma2b and gemma7b
     g2_model = ModelData.Schema().load(json.load(open("model_details/google/gemma_2b.json")), unknown=EXCLUDE)
     g2_s4_err = 313_927_920 - predict_trainable_weights_mem(g2_model, 64, False, True, True)
     g2_s5_err = 379_998_208 - predict_trainable_weights_mem(g2_model, 64, True, True, True)
-    g2_s6_err = 23_891_968 - predict_trainable_weights_mem(g2_model, 4, True, True, False)
+    g2_s6_err = 23_891_968 - predict_trainable_weights_mem(g2_model, 4, True, True, True)
     g2_s7_err = 95_113_216 - predict_trainable_weights_mem(g2_model, 16, True, True, True)
     # g2_s8_err = 95_113_216 - predict_trainable_weights_mem(g2_model, 16, True, True, True)
     # g2_s9_err = 95_113_216 - predict_trainable_weights_mem(g2_model, 16, True, True, True)
@@ -447,22 +453,6 @@ if __name__ == "__main__":
     g7_s13_err = 400_381_952 - predict_trainable_weights_mem(g7_model, 32, False, True, True)
     g7_s14_err = 330_782_720 - predict_trainable_weights_mem(g7_model, 32, True, False, True)
     print("dummy statement")
-    # when assuming 4 bytes per trainable param, undershot in just 2 cases, by 11945984 for g2_s6 and by 319488 for g7_s12
-    # for the rest, drastically overshot
-    #       output was a bit over 2x the actual value for g2 s13-19
-    #       output was merely 1.5x the actual value for g2_s22 and g2_s23
-    #       strangely, output was ~1.3-1.4 actual for g2_s4, g2_s5, and g2_s7
-    #
-    #       output was ~1.25 actual for g7_s10
-    #       output was SIX TIMES ACTUAL for g7_s11
-    #       output was ~2.4 actual for g7_s13
-    #       output was ~1.25 actual for g7_s14
-    #       output was ~4.4 actual for g7_s1
-    #       output was ~2.3 actual for g7_s2
-    #       output was ~2.3 actual for g7_s4
-    #       output was ~2.3 actual for g7_s5
-
-    #todo switch predict_trainable_weights_mem to assume 2 bytes per trainable param, then rerun and evaluate the remaining outliers
 
 
     # todo test predict_optimizer_states_mem() against collected data for gemma2b and gemma7b
