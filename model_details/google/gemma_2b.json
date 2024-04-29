@@ -17,10 +17,10 @@
     "mlp_module_names": ["gate_proj", "up_proj", "down_proj"],
     "is_mlp_gated": true,
     "__comment_divider1": "the above are for principled considerations, the below for hacks to get around pytorch's/bitsandbytes' frustratingly coarse-grained and hard-to-understand memory allocation behavior",
-    "initial_massive_params_chunk": 1048576000,
+    "initial_massive_params_chunk_size": 1048576000,
     "__comment_initial_massive_params_chunk": "this is the size of the big params chunk which is allocated at the start of the base-model-weights-4bit-quantization process and then deallocated immediately after the quantization process is done _and after_ the persistent massive params chunk is _allocated_",
     "total_size_of_frozen_weight_small_tensors": 1022637056,
     "__comment_total_size_of_frozen_weight_small_tensors": "this is the total size of the frozen weight tensors that are built up during the base-model-weights-4bit-quantization process and then persist throughout the training run",
-    "persistent_massive_params_chunk": 2097152000,
+    "persistent_massive_params_chunk_size": 2097152000,
     "__comment_persistent_massive_params_chunk": "this is the size of the big params chunk which is allocated at the end of the base-model-weights-4bit-quantization process is done and then persists through the rest of the training process"
 }

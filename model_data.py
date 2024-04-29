@@ -21,14 +21,14 @@ class ModelData:
     embed_module_name: str
     attn_module_names: List[str]
     mlp_module_names: List[str]
-    # this currently assumes the gating's elementwise product is done in the hidden dimension, before down projecting
-    #  back to the model dimension
-    is_mlp_gated: bool
+    initial_massive_params_chunk_size: int
+    total_size_of_frozen_weight_small_tensors: int
+    persistent_massive_params_chunk_size: int
     Schema: ClassVar[Type[Schema]] = Schema
 
 
-gemmaData: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_2b.json")), unknown=EXCLUDE)
-print(gemmaData)
+gemma_2b_data: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_2b.json")), unknown=EXCLUDE)
+print(gemma_2b_data)
 
 
 class QuantizationLevels(Enum):
@@ -38,5 +38,5 @@ class QuantizationLevels(Enum):
     BF16 = 16
     INT8 = 8
     FP8 = 8
-    NF4 = 4
+    NF4 = 4#levels above 4 not currently supported
     FP4 = 4
