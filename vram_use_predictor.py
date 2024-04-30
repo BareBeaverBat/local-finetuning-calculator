@@ -216,12 +216,19 @@ def calculate_central_autograd_peak(model_data: ModelData, lora_r: int, lora_emb
     :param batch_size: the batch size for the current training configuration
     :return: the size in bytes of this peak of memory usage
     """
+
+    small_activations_size, medium_activations_size = predict_activations_mem(model_data, sequence_len, batch_size)
+    activations_buildup_size = small_activations_size + medium_activations_size * (model_data.num_layers + 2)
+
     # accumulated activations at this peak and also the big stacked activation/autograd_detail tensors at this peak
     # seem to scale almost exactly linearly with sequence length for both gemma2b and gemma7b
     # in this case, both also seem to scale exactly linearly with batch size
-    # also need to figure out what the base numbers are (preferably how to derive from other model details)
+    # multipliers are approximate
+    large_activation_tensor = 1_000_000 * sequence_len * batch_size
+    large_stacked_autograd_tensors = 2_000_000 * sequence_len * batch_size
 
-    return -1  # todo implement this b4 delivery based on data collected so far
+    return (calculate_static_vram_usage(model_data, lora_r, lora_embed, lora_attn, lora_mlp)
+            + large_activation_tensor + large_stacked_autograd_tensors + activations_buildup_size)
 
 
 def calculate_backward_pass_highest_layer_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
