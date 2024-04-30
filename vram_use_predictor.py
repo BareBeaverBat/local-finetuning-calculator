@@ -37,48 +37,38 @@ def calc_num_trainable_weights(model_data: ModelData, lora_r: int, lora_embed: b
         hidden_layer_result_width = model_data.feed_forward_hidden_dim
         if model_data.is_mlp_gated:
             hidden_layer_result_width /= 2
-            #adding the gate proj
-            mlp_block_size += model_data.model_dim*lora_r + lora_r*hidden_layer_result_width
-        #up proj and down proj
+            # adding the gate proj
+            mlp_block_size += model_data.model_dim * lora_r + lora_r * hidden_layer_result_width
+        # up proj and down proj
         mlp_block_size += (model_data.model_dim * lora_r + lora_r * hidden_layer_result_width
-                           + hidden_layer_result_width*lora_r + lora_r*model_data.model_dim)
+                           + hidden_layer_result_width * lora_r + lora_r * model_data.model_dim)
         trainable_param_count += model_data.num_layers * mlp_block_size
-        #the gating thing does matter!!! it affects the size of the down projection adapter!!
 
     return trainable_param_count
 
 
-def predict_activations_mem() -> float:
-    # batch size and sequence length are important factors here
-    # pytorch/transformers defaults to recomputing activations to save memory/io iff you set gradient_checkpointing=True
-    # which, based on the medium post linked by the docs for that, seems like it probably only saves the activations
-    # for sqrt-n layers?
-    # mem usage for activations from full fine-tuning with no gradient checkpointing is pretty well described by this (assumes layer norm and multi-head attention)
-    # https://medium.com/@maxshapp/understanding-and-estimating-gpu-memory-demands-for-training-llms-in-practise-c5ef20a4baff
-    # but with LoRA and gradient checkpointing complicating the picture (also, gemma uses RMSNorm rather than LayerNorm, which I think might halve the activation memory usage from those norm blocks),
-    # I'm going to need to do tons of experiments
-    #  e.g. with gradient checkpointing, does transformers save every single sub-element of the activations of the selected layers (sqrt(L) layers chosen this way automatically), or just the final output from each layer? or something else?
+def predict_activations_mem(model_data: ModelData, seq_len: int, batch_size: int) -> (float, float):
+    """
+    predicts information about the sizes of long-lived (within the scope of a mini-batch) activation tensors for a
+    given model
+    :param model_data: information about the model
+    :param seq_len: the sequence length for each training record for the current training configuration
+    :param batch_size: the batch size for the current training configuration
+    :return: a tuple with the size of the small long-lived activation tensor for this model and the size which a bunch
+        of larger long-lived activation tensors all have in common
+    """
+    # from experimental analysis (look for "sl x bs x ..." in the spreadsheet under the column labelled #4), it is
+    #  extremely unclear what the small activation tensor is scaling with (besides sequence length and batch size),
+    #  but there's definitely something
+    # Going with a base multiplier of 256 as a compromise between the results seen in different experiments
+    small_activation_size = 256 * seq_len * batch_size
 
-    return -1
+    # experimental analysis (look for "sl x bs x ..." in the spreadsheet under the column labelled #5) shows extremely
+    #  consistent behavior for the larger activation tensors- they scale linearly with sequence length and batch size
+    #  with model-specific base multipliers of 8192 for gemma2b and 12288 for gemma7b
+    medium_activation_size = model_data.repeated_activation_tensor_scaling_factor * seq_len * batch_size
 
-
-def predict_frozen_weights_mem(model_data: ModelData, quantization_level: QuantizationLevels,
-                               double_quantize: bool) -> float:
-    # depends on model size, choices about quantization of weights (including whether to double/nested quantize)
-    # need to keep track of both embedding and non-embedding weights!
-    frozen_weights_mem = 0.0
-
-    per_param_byte_usage = quantization_level.value / 8
-    if double_quantize:
-        per_param_byte_usage -= 0.4
-
-    # todo find out experimentally if bitsandbytes also applies to embedding weights
-
-    frozen_weights_mem += model_data.num_non_embed_params * per_param_byte_usage
-
-    # todo confirm formula from bitsandbytes docs about effect of nested quantization (0.4bits per param)
-
-    return frozen_weights_mem
+    return small_activation_size, medium_activation_size
 
 
 # todo check whether the tiny (8 or 12 KiB) params tensors have the same count in every run of a particular model type
@@ -93,16 +83,30 @@ def predict_trainable_weights_mem(model_data: ModelData, lora_r: int, lora_embed
     return bytes_from_trainable_weights
 
 
-def predict_optimizer_states_mem() -> float:
-    # depends on optimizer choice, # trainable parameters, and choices about quantization of optimizer states
+def predict_optimizer_states_mem(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
+                                 lora_mlp: bool) -> float:
+    # depends on optimizer choice (frozen as paged-adamw-32bit for now), # trainable parameters, and choices about quantization of optimizer states (not relevant for now)
 
     # one article seemed to claim that a second copy of the current parameter value was part of the optimizer states for each parameter
-    # need to try to confirm this empirically
+    # need to try to confirm this empirically (not really, looks like adamw optimizer memory states are at worst ~2x the size of the trainable parameters memory, not 3x)
 
     # this is going to be complicated/unreliable because the optimizer is paged
-    # todo implement before delivery!
+    # for Gemma2b, there's this weird pattern where it's close to 2x the amount of params memory if amount of params
+    #   memory is in single or low double digits of MiB, but then _sometimes_ above that point it's close to 1/2 the
+    #   amount of params memory (e.g. scenario 12 with 95megs of params memory and 44megs of optimizer states memory)
+    #   but then once you're in the hundreds of megabytes of params memory, it's always just 4.7megs (except this 4.7megs
+    #   of optimizer memory behavior also occurs with just 59megs of params memory in cases like scenarios 16n17)
+    # Then the behavior for Gemma7b looks nothing like that at all :''(
+    #   it never forces to just 4.7megs of vram once the params memory is in the hundreds of megabytes; optimizer states
+    #   are 1.5-2x the size of params memory for a few cases where params memory was in the 15-55meg range, but then
+    #   for cases with params memory higher than that the optimizer memory varies from 1/5 to 3/5 of params memory
 
-    return -1
+    # rough-and-ready approximation of the above:
+    trainable_params_mem = predict_trainable_weights_mem(model_data, lora_r, lora_embed, lora_attn, lora_mlp)
+    if trainable_params_mem < 75_000_000:
+        return trainable_params_mem * 2
+    else:
+        return trainable_params_mem / 2
 
 
 def predict_gradients_mem() -> int:
@@ -126,8 +130,12 @@ def calculate_quantization_peak(model_data: ModelData) -> int:
     return model_data.initial_massive_params_chunk_size + model_data.total_size_of_frozen_weight_small_tensors + model_data.persistent_massive_params_chunk_size
 
 
-# todo make helper method for the total size of tensors that are present for all peaks after the quantization peak
-# frozen weights tensors, persistent massive params chunk, trainable params, and optimizer state
+def calculate_static_vram_usage(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
+                                lora_mlp: bool) -> float:
+    # total size of tensors that are present for all peaks after the quantization peak
+    return (model_data.total_size_of_frozen_weight_small_tensors + model_data.persistent_massive_params_chunk_size +
+            predict_trainable_weights_mem(model_data, lora_r, lora_embed, lora_attn, lora_mlp) +
+            predict_optimizer_states_mem(model_data, lora_r, lora_embed, lora_attn, lora_mlp))
 
 
 # todo final predictor might need fudge factor for the persistent peak calculation errors that are recorded in the experiment results spreadsheet (on the order of tens of KiB or sometimes 100-200KiB)
@@ -151,6 +159,9 @@ def calculate_forward_pass_highest_layer_peak(model_data: ModelData, lora_r: int
     # somehow depends on model size (maybe model_data.model_dim?) because I can't reproduce this being a peak with gemma2b
     #  I suspect it also depends on sequence length and batch size but haven't checked that yet
 
+    # this will require hard-coding something in the gemma2b vs 7b models' jsons about how the former only has
+    # num_layers+3 activation tensors at this point while the latter has num_layers+4 activation tensors at this point
+
     return -1  # todo implement this in future, after gathering more data
 
 
@@ -170,7 +181,23 @@ def calculate_central_activations_peak(model_data: ModelData, lora_r: int, lora_
     :return: the size in bytes of this peak of memory usage
     """
 
-    return -1  # todo implement this b4 delivery based on data collected so far
+    # the stacked big activation tensors here scale in a confusingly noisy way, but there's a clear (if still
+    # perplexing) trend that their total size scales linearly with sequence length,
+    # when batch size is one, their total size scales linearly with sequence length with constant factor of ~2million
+    # when batch size >1, their total size scales linearly with both sequence-length/batch-size with constant factor of
+    # ~3million
+
+    large_stacked_activation_tensors = 2_000_000 * sequence_len
+    if batch_size > 1:
+        large_stacked_activation_tensors = 3_000_000 * sequence_len * batch_size
+    elif batch_size < 1:
+        raise Exception("Batch size must be at least 1")
+
+    small_activations_size, medium_activations_size = predict_activations_mem(model_data, sequence_len, batch_size)
+    activations_buildup_size = small_activations_size + medium_activations_size * (model_data.num_layers + 3)
+
+    return (calculate_static_vram_usage(model_data, lora_r, lora_embed, lora_attn, lora_mlp)
+            + large_stacked_activation_tensors + activations_buildup_size)
 
 
 def calculate_central_autograd_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
@@ -189,6 +216,10 @@ def calculate_central_autograd_peak(model_data: ModelData, lora_r: int, lora_emb
     :param batch_size: the batch size for the current training configuration
     :return: the size in bytes of this peak of memory usage
     """
+    # accumulated activations at this peak and also the big stacked activation/autograd_detail tensors at this peak
+    # seem to scale almost exactly linearly with sequence length for both gemma2b and gemma7b
+    # in this case, both also seem to scale exactly linearly with batch size
+    # also need to figure out what the base numbers are (preferably how to derive from other model details)
 
     return -1  # todo implement this b4 delivery based on data collected so far
 
@@ -352,9 +383,9 @@ def main():
     model_data = ModelData.Schema().load(json.load(open(model_details_file_path)), unknown=EXCLUDE)
 
     lora_r_candidates: List[int] = [args.lora_r] if args.lora_r is not None else lora_r_possibilities
-    lora_embed_candidates: List[bool] = [args.lora_embed] if args.lora_embed is not None else [True, False]
-    lora_attn_candidates: List[bool] = [args.lora_attn] if args.lora_attn is not None else [True, False]
-    lora_mlp_candidates: List[bool] = [args.lora_mlp] if args.lora_mlp is not None else [True, False]
+    lora_embed_candidates: List[bool] = [args.lora_embed] if args.lora_embed is not None else [False, True]
+    lora_attn_candidates: List[bool] = [args.lora_attn] if args.lora_attn is not None else [False, True]
+    lora_mlp_candidates: List[bool] = [args.lora_mlp] if args.lora_mlp is not None else [False, True]
     seq_len_candidates: List[int] = [args.sequence_len] if args.sequence_len is not None else seq_len_possibilities
     batch_size_candidates: List[int] = [args.batch_size] if args.batch_size is not None else batch_size_possibilities
 
@@ -368,6 +399,7 @@ def main():
 
     viable_configs: List[TrainingConfiguration] = []
 
+    # the below early stopping logic relies on the assumption that each list of candidates is in ascending order of VRAM usage
     for curr_lora_embed in lora_embed_candidates:
         any_viable_configs_for_curr_lora_embed = False
         for curr_lora_attn in lora_attn_candidates:
@@ -416,46 +448,4 @@ def main():
 
 
 if __name__ == "__main__":
-    g2_model = ModelData.Schema().load(json.load(open("model_details/google/gemma_2b.json")), unknown=EXCLUDE)
-    g2_s4_err = 313_927_920 - predict_trainable_weights_mem(g2_model, 64, False, True, True)
-    g2_s5_err = 379_998_208 - predict_trainable_weights_mem(g2_model, 64, True, True, True)
-    g2_s6_err = 23_891_968 - predict_trainable_weights_mem(g2_model, 4, True, True, True)
-    g2_s7_err = 95_113_216 - predict_trainable_weights_mem(g2_model, 16, True, True, True)
-    # g2_s8_err = 95_113_216 - predict_trainable_weights_mem(g2_model, 16, True, True, True)
-    # g2_s9_err = 95_113_216 - predict_trainable_weights_mem(g2_model, 16, True, True, True)
-    # g2_s10_err = 95_113_216 - predict_trainable_weights_mem(g2_model, 16, True, True, True)
-    # g2_s11_err = 95_113_216 - predict_trainable_weights_mem(g2_model, 16, True, True, True)
-    # g2_s12_err = 95_113_216 - predict_trainable_weights_mem(g2_model, 16, True, True, True)
-    g2_s13_err = 14_897_152 - predict_trainable_weights_mem(g2_model, 16, False, True, False)
-    g2_s14_err = 59_133_952 - predict_trainable_weights_mem(g2_model, 64, False, True, False)
-    g2_s15_err = 3_837_952 - predict_trainable_weights_mem(g2_model, 4, False, True, False)
-    # g2_s16_err = 59_133_952 - predict_trainable_weights_mem(g2_model, 64, False, True, False)
-    # g2_s17_err = 59_125_760 - predict_trainable_weights_mem(g2_model, 64, False, True, False)
-    g2_s19_err = 1_994_752 - predict_trainable_weights_mem(g2_model, 2, False, True, False)
-    # g2_s20_err = 1_994_752 - predict_trainable_weights_mem(g2_model, 2, False, True, False)
-    # g2_s21_err = 379_998_208 - predict_trainable_weights_mem(g2_model, 64, True, True, True)
-    g2_s22_err = 125_194_240 - predict_trainable_weights_mem(g2_model, 64, True, True, False)
-    g2_s23_err = 256_236_928 - predict_trainable_weights_mem(g2_model, 128, True, True, False)
-
-    g7_model = ModelData.Schema().load(json.load(open("model_details/google/gemma_7b.json")), unknown=EXCLUDE)
-    g7_s1_err = 17_963_008 - predict_trainable_weights_mem(g7_model, 4, True, True, False)
-    g7_s2_err = 55_121_920 - predict_trainable_weights_mem(g7_model, 4, True, True, True)
-    # g7_s3_err = 55_121_920 - predict_trainable_weights_mem(g7_model, 4, True, True, True)
-    g7_s4_err = 217_995_264 - predict_trainable_weights_mem(g7_model, 16, True, True, True)
-    g7_s5_err = 433_543_168 - predict_trainable_weights_mem(g7_model, 32, True, True, True)
-    # g7_s6_err = 433_543_168 - predict_trainable_weights_mem(g7_model, 32, True, True, True)
-    # g7_s7_err = 433_543_168 - predict_trainable_weights_mem(g7_model, 32, True, True, True)
-    # g7_s8_err = 217_995_264 - predict_trainable_weights_mem(g7_model, 16, True, True, True)
-    # g7_s9_err = 217_995_264 - predict_trainable_weights_mem(g7_model, 16, True, True, True)
-    g7_s10_err = 446_781_440 - predict_trainable_weights_mem(g7_model, 48, False, False, True)
-    g7_s11_err = 154_490_880 - predict_trainable_weights_mem(g7_model, 48, False, True, False)
-    g7_s12_err = 50_085_888 - predict_trainable_weights_mem(g7_model, 48, True, False, False)
-    g7_s13_err = 400_381_952 - predict_trainable_weights_mem(g7_model, 32, False, True, True)
-    g7_s14_err = 330_782_720 - predict_trainable_weights_mem(g7_model, 32, True, False, True)
-    print("dummy statement")
-
-
-    # todo test predict_optimizer_states_mem() against collected data for gemma2b and gemma7b
-
-    # main()
-    pass
+    main()

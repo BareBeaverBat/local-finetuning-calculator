@@ -27,6 +27,7 @@ class ModelData:
     initial_massive_params_chunk_size: int
     total_size_of_frozen_weight_small_tensors: int
     persistent_massive_params_chunk_size: int
+    repeated_activation_tensor_scaling_factor: int
     Schema: ClassVar[Type[Schema]] = Schema
 
 

@@ -22,5 +22,6 @@
     "total_size_of_frozen_weight_small_tensors": 3897891840,
     "__comment_total_size_of_frozen_weight_small_tensors": "this is the total size of the frozen weight tensors that are built up during the base-model-weights-4bit-quantization process and then persist throughout the training run",
     "persistent_massive_params_chunk_size": 3145728000,
-    "__comment_persistent_massive_params_chunk": "this is the size of the big params chunk which is allocated at the end of the base-model-weights-4bit-quantization process is done and then persists through the rest of the training process"
+    "__comment_persistent_massive_params_chunk": "this is the size of the big params chunk which is allocated at the end of the base-model-weights-4bit-quantization process is done and then persists through the rest of the training process",
+    "repeated_activation_tensor_scaling_factor": 12288
 }
