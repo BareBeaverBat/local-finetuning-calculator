@@ -8,7 +8,7 @@ import argparse
 
 from marshmallow import EXCLUDE
 
-from model_data import ModelData, QuantizationLevels
+from model_data import ModelData
 
 
 # reminder - just doing this for sft. no consideration of max output length b/c not doing any novel generation
@@ -109,8 +109,9 @@ def predict_optimizer_states_mem(model_data: ModelData, lora_r: int, lora_embed:
         return trainable_params_mem / 2
 
 
+test_vram_capacity: None|int = None
 def measure_vram_capacity() -> int:
-    return torch.cuda.mem_get_info()[0]
+    return torch.cuda.mem_get_info()[0] if test_vram_capacity is None else test_vram_capacity
 
 
 def calculate_quantization_peak(model_data: ModelData) -> int:
@@ -228,7 +229,9 @@ def calculate_backward_pass_highest_layer_peak(model_data: ModelData, lora_r: in
                                                lora_mlp: bool,
                                                sequence_len: int, batch_size: int) -> float:
     """
-    todo at least document/explain this before delivery
+    This calculates the height of the peak from the spikes of large/short-lived temporary tensors being allocated
+    during the backward pass through the highest layer of the model (when almost all of the built-up activations
+    tensors are still allocated)
     :param model_data: information about the model being fine-tuned
     :param lora_r: the rank of the LoRA matrices
     :param lora_embed: whether to add a LoRA adapter to the embedding matrix
@@ -297,7 +300,12 @@ def calculate_backward_pass_lowest_layer_late_peak(model_data: ModelData, lora_r
                                                    lora_attn: bool, lora_mlp: bool,
                                                    sequence_len: int, batch_size: int) -> float:
     """
-    todo at least document/explain this before delivery
+    This calculates the height of the peak from the spikes of large/short-lived temporary tensors being allocated
+    near the end of the backward pass through the lowest layer of the model, when the maximum amount of gradient
+    tensors have been built up in GPU memory (but not yet applied to the trainable parameters)
+    This is only relevant (in addition to the backward_pass_lowest_layer_*mid*_peak function) if large enough gradient
+    tensors are created at various points in the backward pass through the lowest layer of the model that their creation
+    outweighs the gradual deallocation of temporary tensors over the second half of the backward pass through that layer
     :param model_data: information about the model being fine-tuned
     :param lora_r: the rank of the LoRA matrices
     :param lora_embed: whether to add a LoRA adapter to the embedding matrix
@@ -320,7 +328,9 @@ def calculate_end_of_batch_autograd_peak(model_data: ModelData, lora_r: int, lor
                                          lora_mlp: bool,
                                          sequence_len: int, batch_size: int) -> float:
     """
-    todo at least document/explain this before delivery
+    This calculates the height of the peak from the spikes of 2 stacked autograd_detail tensors being allocated by
+    Pytorch shortly after the end of the backward pass, when the gradient tensors have all collected in GPU memory
+    but haven't been applied to the trainable parameters yet
     :param model_data: information about the model being fine-tuned
     :param lora_r: the rank of the LoRA matrices
     :param lora_embed: whether to add a LoRA adapter to the embedding matrix
@@ -381,9 +391,6 @@ batch_size_possibilities = (1, 2, 4, 8)
 
 
 def main():
-    if not torch.is_cuda_available():
-        raise Exception("CUDA is not available")
-
     parser = argparse.ArgumentParser(description="Predict peak VRAM usage for a given model and LoRA settings")
     parser.add_argument("model", required=True, type=str,
                         help="The org and type of the model to predict VRAM usage for (e.g. google/gemma_2b for the 2b "
@@ -403,8 +410,21 @@ def main():
     parser.add_argument("-b", "--batch-size", type=int, help="The batch size to use for the SFT")
     parser.add_argument("--num-configs", type=int, default=10,
                         help="The number of viable configurations to report (default 10)")
+    parser.add_argument("--test-set-gpu-mem-capacity", type=int,
+                        help="The amount of GPU memory to pretend is available for testing purposes")
 
     args = parser.parse_args()
+
+    if not torch.is_cuda_available() and args.test_set_gpu_mem_capacity is None:
+        raise Exception("CUDA is not available")
+
+    if args.test_set_gpu_mem_capacity is not None:
+        global test_vram_capacity
+        test_vram_capacity = args.test_set_gpu_mem_capacity
+    else:
+        free_vram, total_vram = torch.cuda.mem_get_info()
+        existing_vram_usage = total_vram - free_vram
+        print(f"{existing_vram_usage} bytes of VRAM are already in use, out of max GPU capacity of {total_vram} bytes")
 
     if args.model.count("/") != 1:
         raise Exception("Model arg must be in the form 'org_name/model_family_and_size' (size is needed because "
@@ -421,10 +441,6 @@ def main():
     lora_mlp_candidates: List[bool] = [args.lora_mlp] if args.lora_mlp is not None else [False, True]
     seq_len_candidates: List[int] = [args.sequence_len] if args.sequence_len is not None else seq_len_possibilities
     batch_size_candidates: List[int] = [args.batch_size] if args.batch_size is not None else batch_size_possibilities
-
-    free_vram, total_vram = torch.cuda.mem_get_info()
-    existing_vram_usage = total_vram - free_vram
-    print(f"{existing_vram_usage} bytes of VRAM are already in use, out of max GPU capacity of {total_vram} bytes")
 
     quantization_peak = calculate_quantization_peak(model_data)
     if quantization_peak > measure_vram_capacity():
@@ -481,34 +497,4 @@ def main():
 
 
 if __name__ == "__main__":
-    #TODO remove this testing stuff before submission!!!!
-    gemma_2b_data: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_2b.json")),
-                                                       unknown=EXCLUDE)
-    # outputs stored in comments from a run just a couple of minutes before the commit
-
-    # extreme lora-r cases:
-    print("g2 lr128, embed, seq_len4, batch1",  # output 3326757376.0
-          calculate_central_activations_peak(gemma_2b_data, 128, True, False, False, 4, 1))
-    print("g2 lr128, mlp, seq_len4, batch1",  # output 3892890112.0
-          calculate_central_activations_peak(gemma_2b_data, 128, False, False, True, 4, 1))
-
-    # extreme batch size cases:
-    print("g2 lr2, attn, seq_len4, batch8",  # output 3226831872.0
-          calculate_central_activations_peak(gemma_2b_data, 2, False, True, False, 4, 8))
-    print("g2 lr2, mlp, seq_len4, batch8",  # output 3245190144.0
-          calculate_central_activations_peak(gemma_2b_data, 2, False, False, True, 4, 8))
-
-    gemma_7b_data: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_7b.json")),
-                                                       unknown=EXCLUDE)
-    # extreme lora-r cases:
-    print("g7 lr64, embed, seq_len4, batch1",  # output 7252210176.0
-          calculate_central_activations_peak(gemma_7b_data, 64, True, False, False, 4, 1))
-    print("g7 lr64, attn, seq_len4, batch1",  # output 7361425920.0
-          calculate_central_activations_peak(gemma_7b_data, 64, False, True, False, 4, 1))
-
-    # extreme batch size cases:
-    print("g7 lr2, attn, seq_len4, batch8",  # output 7171085312.0
-          calculate_central_activations_peak(gemma_7b_data, 2, False, True, False, 4, 8))
-    print("g7 lr2, mlp, seq_len4, batch8",  # output 7207556096.0
-          calculate_central_activations_peak(gemma_7b_data, 2, False, False, True, 4, 8))
-    # main()
+    main()
