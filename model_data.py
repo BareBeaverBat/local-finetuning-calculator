@@ -33,10 +33,6 @@ class ModelData:
     Schema: ClassVar[Type[Schema]] = Schema
 
 
-gemma_2b_data: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_2b.json")), unknown=EXCLUDE)
-print(gemma_2b_data)
-
-
 class QuantizationLevels(Enum):
     FP32 = 32
     TF32 = 32

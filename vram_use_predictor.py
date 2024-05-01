@@ -109,14 +109,6 @@ def predict_optimizer_states_mem(model_data: ModelData, lora_r: int, lora_embed:
         return trainable_params_mem / 2
 
 
-def predict_gradients_mem() -> int:
-    # depends on # trainable parameters, batch size, and whether/how-much gradients are quantized (not recommended)
-    # ALSO SEQUENCE LENGTH
-    # might want to support gradient accumulation (need to check- it might have exactly zero effect on peak vram usage)
-
-    return -1
-
-
 def measure_vram_capacity() -> int:
     return torch.cuda.mem_get_info()[0]
 
@@ -146,7 +138,8 @@ def calculate_forward_pass_highest_layer_peak(model_data: ModelData, lora_r: int
                                               lora_mlp: bool,
                                               sequence_len: int, batch_size: int) -> float:
     """
-    This is the peak from todo finish this explanation before delivery
+    This calculates the height of the peak from the short-lived and large 'input' tensors that're created in the
+    forward pass through the highest layer of the model
     :param model_data: information about the model being fine-tuned
     :param lora_r: the rank of the LoRA matrices
     :param lora_embed: whether to add a LoRA adapter to the embedding matrix
@@ -204,7 +197,7 @@ def calculate_central_autograd_peak(model_data: ModelData, lora_r: int, lora_emb
                                     lora_mlp: bool,
                                     sequence_len: int, batch_size: int) -> float:
     """
-    This is the peak from stacked autograd blocks (on top of a big activations block) in between the processing of the
+    This calculates the height of the peak from stacked autograd blocks (on top of a big activations block) in between the processing of the
     highest layer for the forward pass and the processing of the highest layer for the backward pass
     This also comes right after the "central activations peak"
     :param model_data: information about the model being fine-tuned
@@ -253,7 +246,8 @@ def calculate_backward_pass_lowest_layer_mid_peak(model_data: ModelData, lora_r:
                                                   lora_mlp: bool,
                                                   sequence_len: int, batch_size: int) -> float:
     """
-    todo document/explain this before delivery
+    This calculates the height of the peak from the middle of the backward pass through the lowest layer of the model
+    when gradients have built up but not yet been applied to the trainable parameters
     :param model_data: information about the model being fine-tuned
     :param lora_r: the rank of the LoRA matrices
     :param lora_embed: whether to add a LoRA adapter to the embedding matrix
@@ -395,19 +389,19 @@ def main():
                         help="The org and type of the model to predict VRAM usage for (e.g. google/gemma_2b for the 2b "
                              "size of one of Google's Gemma models or, once supported, meta_llama/llama3_8b for the 8b "
                              "size of Meta's Llama3")
-    parser.add_argument("-r", "--lora_r", type=int, help="The rank value to use for LoRA matrices")
-    parser.add_argument("-e", "--lora_embed", type=bool,
+    parser.add_argument("-r", "--lora-r", type=int, help="The rank value to use for LoRA matrices")
+    parser.add_argument("-e", "--lora-embed", type=bool,
                         help="Whether to apply LoRA to the embedding matrix (if not specified, report will try both "
                              "true and false for this)")
-    parser.add_argument("-a", "--lora_attn", type=bool,
+    parser.add_argument("-a", "--lora-attn", type=bool,
                         help="Whether to apply LoRA to attention blocks (if not specified, report will try both true "
                              "and false for this)")
-    parser.add_argument("-m", "--lora_mlp", type=bool,
+    parser.add_argument("-m", "--lora-mlp", type=bool,
                         help="Whether to apply LoRA to MLP blocks (if not specified, report will try both true and "
                              "false for this)")
-    parser.add_argument("-s", "--sequence_len", type=int, help="The sequence length to use for the SFT")
-    parser.add_argument("-b", "--batch_size", type=int, help="The batch size to use for the SFT")
-    parser.add_argument("--num_configs", type=int, default=10,
+    parser.add_argument("-s", "--sequence-len", type=int, help="The sequence length to use for the SFT")
+    parser.add_argument("-b", "--batch-size", type=int, help="The batch size to use for the SFT")
+    parser.add_argument("--num-configs", type=int, default=10,
                         help="The number of viable configurations to report (default 10)")
 
     args = parser.parse_args()
@@ -487,6 +481,7 @@ def main():
 
 
 if __name__ == "__main__":
+    #TODO remove this testing stuff before submission!!!!
     gemma_2b_data: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_2b.json")),
                                                        unknown=EXCLUDE)
     # outputs stored in comments from a run just a couple of minutes before the commit
