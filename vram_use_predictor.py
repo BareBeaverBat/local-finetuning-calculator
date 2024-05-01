@@ -497,4 +497,51 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    #TODO remove this testing stuff before submission!!!!
+    gemma_2b_data: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_2b.json")),
+                                                       unknown=EXCLUDE)
+    # outputs stored in comments from a run just a couple of minutes before the commit
+
+    # extreme lora-r cases:
+    print("g2 lr128, embed, seq_len4, batch1 D",  # output 3330724608.0
+          calculate_central_autograd_peak(gemma_2b_data, 128, True, False, False, 4, 1))
+    print("g2 lr128, mlp, seq_len4, batch1 D",  # output 3896857344.0
+          calculate_central_autograd_peak(gemma_2b_data, 128, False, False, True, 4, 1))
+    print("g2 lr128, embed, seq_len4, batch1 G",  # output 3652933488.0
+          calculate_backward_pass_lowest_layer_mid_peak(gemma_2b_data, 128, True, False, False, 4, 1))
+    print("g2 lr128, mlp, seq_len4, batch1 G",  # output 4596815728.0
+          calculate_backward_pass_lowest_layer_mid_peak(gemma_2b_data, 128, False, False, True, 4, 1))
+
+    # extreme batch size cases:
+    print("g2 lr2, attn, seq_len4, batch8 D",  # output 3226569728.0
+          calculate_central_autograd_peak(gemma_2b_data, 2, False, True, False, 4, 8))
+    print("g2 lr2, mlp, seq_len4, batch8 D",  # output 3244928000.0
+          calculate_central_autograd_peak(gemma_2b_data, 2, False, False, True, 4, 8))
+    print("g2 lr2, attn, seq_len4, batch8 G",  # output 3339308928.0
+          calculate_backward_pass_lowest_layer_mid_peak(gemma_2b_data, 2, False, True, False, 4, 8))
+    print("g2 lr2, mlp, seq_len4, batch8 G",  # output 3366408064.0
+          calculate_backward_pass_lowest_layer_mid_peak(gemma_2b_data, 2, False, False, True, 4, 8))
+
+    gemma_7b_data: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_7b.json")),
+                                                       unknown=EXCLUDE)
+    # extreme lora-r cases:
+    print("g7 lr64, embed, seq_len4, batch1 D",  # output 7256161024.0
+          calculate_central_autograd_peak(gemma_7b_data, 64, True, False, False, 4, 1))
+    print("g7 lr64, attn, seq_len4, batch1 D",  # output 7365376768.0
+          calculate_central_autograd_peak(gemma_7b_data, 64, False, True, False, 4, 1))
+    print("g7 lr64, embed, seq_len4, batch1 G",  # output 7764124800.0
+          calculate_backward_pass_lowest_layer_mid_peak(gemma_7b_data, 64, True, False, False, 4, 1))
+    print("g7 lr64, attn, seq_len4, batch1 G",  # output 8012506240.0
+          calculate_backward_pass_lowest_layer_mid_peak(gemma_7b_data, 64, False, True, False, 4, 1))
+
+    # extreme batch size cases:
+    print("g7 lr2, attn, seq_len4, batch8 D",  # output 7170692096.0
+          calculate_central_autograd_peak(gemma_7b_data, 2, False, True, False, 4, 8))
+    print("g7 lr2, mlp, seq_len4, batch8 D",  # output 7207162880.0
+          calculate_central_autograd_peak(gemma_7b_data, 2, False, False, True, 4, 8))
+    print("g7 lr2, attn, seq_len4, batch8 G",  # output 7539089408.0
+          calculate_backward_pass_lowest_layer_mid_peak(gemma_7b_data, 2, False, True, False, 4, 8))
+    print("g7 lr2, mlp, seq_len4, batch8 G",  # output 7590338560.0
+          calculate_backward_pass_lowest_layer_mid_peak(gemma_7b_data, 2, False, False, True, 4, 8))
+
+    # main()
