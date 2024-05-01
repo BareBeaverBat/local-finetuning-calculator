@@ -290,12 +290,12 @@ def calculate_backward_pass_lowest_layer_mid_peak(model_data: ModelData, lora_r:
     #  scales ~linearly with sequence length and batch size
     #  doesn't scale with lora-r
     # very different scaling base multipliers for gemma 2b and 7b (~321_500 and ~500_000 respectively, based on partial survey of experimental data)
-    misc_temp_tensors_in_back_pass_spike = sequence_len*batch_size*model_data.backward_pass_spike_temporary_tensors_scaling_factor
+    misc_temp_tensors_in_back_pass_spike = sequence_len * batch_size * model_data.backward_pass_spike_temporary_tensors_scaling_factor
 
     # the two highest 'temporary' tensors in this peak G are 144.0mib/288.0mib for gemma7b but only 64.0mib/128.0mib for gemma2b
 
-    return (calculate_static_vram_usage(model_data, lora_r, lora_embed, lora_attn, lora_mlp) + remaining_activations_size
-            + gradients_buildup_estimate + temp_tensor_for_mlp_lora_above_new_grads
+    return (calculate_static_vram_usage(model_data, lora_r, lora_embed, lora_attn, lora_mlp)
+            + remaining_activations_size + gradients_buildup_estimate + temp_tensor_for_mlp_lora_above_new_grads
             + misc_temp_tensors_in_back_pass_spike + model_data.large_temporary_tensors_in_backward_pass)
 
 
@@ -487,4 +487,33 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    gemma_2b_data: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_2b.json")),
+                                                       unknown=EXCLUDE)
+    # outputs stored in comments from a run just a couple of minutes before the commit
+
+    # extreme lora-r cases:
+    print("g2 lr128, embed, seq_len4, batch1",  # output 3326757376.0
+          calculate_central_activations_peak(gemma_2b_data, 128, True, False, False, 4, 1))
+    print("g2 lr128, mlp, seq_len4, batch1",  # output 3892890112.0
+          calculate_central_activations_peak(gemma_2b_data, 128, False, False, True, 4, 1))
+
+    # extreme batch size cases:
+    print("g2 lr2, attn, seq_len4, batch8",  # output 3226831872.0
+          calculate_central_activations_peak(gemma_2b_data, 2, False, True, False, 4, 8))
+    print("g2 lr2, mlp, seq_len4, batch8",  # output 3245190144.0
+          calculate_central_activations_peak(gemma_2b_data, 2, False, False, True, 4, 8))
+
+    gemma_7b_data: ModelData = ModelData.Schema().load(json.load(open("./model_details/google/gemma_7b.json")),
+                                                       unknown=EXCLUDE)
+    # extreme lora-r cases:
+    print("g7 lr64, embed, seq_len4, batch1",  # output 7252210176.0
+          calculate_central_activations_peak(gemma_7b_data, 64, True, False, False, 4, 1))
+    print("g7 lr64, attn, seq_len4, batch1",  # output 7361425920.0
+          calculate_central_activations_peak(gemma_7b_data, 64, False, True, False, 4, 1))
+
+    # extreme batch size cases:
+    print("g7 lr2, attn, seq_len4, batch8",  # output 7171085312.0
+          calculate_central_activations_peak(gemma_7b_data, 2, False, True, False, 4, 8))
+    print("g7 lr2, mlp, seq_len4, batch8",  # output 7207556096.0
+          calculate_central_activations_peak(gemma_7b_data, 2, False, False, True, 4, 8))
+    # main()
