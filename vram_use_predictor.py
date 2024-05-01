@@ -181,6 +181,9 @@ def calculate_central_activations_peak(model_data: ModelData, lora_r: int, lora_
     :return: the size in bytes of this peak of memory usage
     """
 
+    small_activations_size, medium_activations_size = predict_activations_mem(model_data, sequence_len, batch_size)
+    activations_buildup_size = small_activations_size + medium_activations_size * (model_data.num_layers + 3)
+
     # the stacked big activation tensors here scale in a confusingly noisy way, but there's a clear (if still
     # perplexing) trend that their total size scales linearly with sequence length,
     # when batch size is one, their total size scales linearly with sequence length with constant factor of ~2million
@@ -193,11 +196,8 @@ def calculate_central_activations_peak(model_data: ModelData, lora_r: int, lora_
     elif batch_size < 1:
         raise Exception("Batch size must be at least 1")
 
-    small_activations_size, medium_activations_size = predict_activations_mem(model_data, sequence_len, batch_size)
-    activations_buildup_size = small_activations_size + medium_activations_size * (model_data.num_layers + 3)
-
     return (calculate_static_vram_usage(model_data, lora_r, lora_embed, lora_attn, lora_mlp)
-            + large_stacked_activation_tensors + activations_buildup_size)
+            + activations_buildup_size + large_stacked_activation_tensors)
 
 
 def calculate_central_autograd_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
@@ -227,8 +227,8 @@ def calculate_central_autograd_peak(model_data: ModelData, lora_r: int, lora_emb
     large_activation_tensor = 1_000_000 * sequence_len * batch_size
     large_stacked_autograd_tensors = 2_000_000 * sequence_len * batch_size
 
-    return (calculate_static_vram_usage(model_data, lora_r, lora_embed, lora_attn, lora_mlp)
-            + large_activation_tensor + large_stacked_autograd_tensors + activations_buildup_size)
+    return (calculate_static_vram_usage(model_data, lora_r, lora_embed, lora_attn, lora_mlp) + activations_buildup_size
+            + large_activation_tensor + large_stacked_autograd_tensors)
 
 
 def calculate_backward_pass_highest_layer_peak(model_data: ModelData, lora_r: int, lora_embed: bool, lora_attn: bool,
@@ -263,8 +263,40 @@ def calculate_backward_pass_lowest_layer_mid_peak(model_data: ModelData, lora_r:
     :param batch_size: the batch size for the current training configuration
     :return: the size in bytes of this peak of memory usage
     """
+    small_activations_size, medium_activations_size = predict_activations_mem(model_data, sequence_len, batch_size)
+    remaining_activations_size = small_activations_size + medium_activations_size * 2
 
-    return -1  # todo implement this b4 delivery based on data collected so far
+    # formula for built-up gradients: I can't see any trend in the experimental data between sequence length/batch-size
+    #  and the size of the built-up gradients at this peak
+    #  The best I can do is note that the build of gradients at this peak are almost always 80-120% of the size of the
+    #  trainable parameters in memory; I'm going with a rough estimate of assuming that they're equal
+    gradients_buildup_estimate = predict_trainable_weights_mem(model_data, lora_r, lora_embed, lora_attn, lora_mlp)
+
+    # lora params for mlp blocks contribute to the extra temporary tensor above the new grad (the 3rd small one under column labelled #22 in spreadsheet), but not attn blocks or embed matrix (if no mlp lora, that 3rd temporary tensor above the new grads doesn't show up)
+    #   that 3rd tensor scales linearly with batch size
+    #   scales sort-of linearly with sequence length?:
+    #       when lora-r fixed to 32, for gemma7b, increasing seq_len 64->96->128 yields 6mib->9mib->12mib for this tensor, but seq_len 16 yields 2mib (maybe pytorch coarse-grained allocation, and it should've been 1.5mib?)
+    #           so here the slope was 3*2^15 increase in bytes of this tensor per token of increase in sequence length
+    #       comparing gemma7b scenarios 3-5, it doesn't seem to scale at all with lora-r
+    #       For gemma 2b:
+    #           definitely doesn't scale with lora-r
+    #           seems to scale as 2mib per 32 tokens of sequence length, so 2^21 bytes per 2^5 tokens of sequence length, so 2^16 bytes per token of sequence length
+    # I don't want to add a new hacky detail to the model jsons right now, so I'll split the difference between a scaling rate of 2*2^15 and 3*2^15 with 2.5*2^15
+    temp_tensor_for_mlp_lora_above_new_grads = 0
+    if lora_mlp:
+        temp_tensor_for_mlp_lora_above_new_grads = sequence_len * batch_size * 2.5 * 2 ** 15
+
+    # for the other tensors (under column #19 in the spreadsheet):
+    #  scales ~linearly with sequence length and batch size
+    #  doesn't scale with lora-r
+    # very different scaling base multipliers for gemma 2b and 7b (~321_500 and ~500_000 respectively, based on partial survey of experimental data)
+    misc_temp_tensors_in_back_pass_spike = sequence_len*batch_size*model_data.backward_pass_spike_temporary_tensors_scaling_factor
+
+    # the two highest 'temporary' tensors in this peak G are 144.0mib/288.0mib for gemma7b but only 64.0mib/128.0mib for gemma2b
+
+    return (calculate_static_vram_usage(model_data, lora_r, lora_embed, lora_attn, lora_mlp) + remaining_activations_size
+            + gradients_buildup_estimate + temp_tensor_for_mlp_lora_above_new_grads
+            + misc_temp_tensors_in_back_pass_spike + model_data.large_temporary_tensors_in_backward_pass)
 
 
 def calculate_backward_pass_lowest_layer_late_peak(model_data: ModelData, lora_r: int, lora_embed: bool,

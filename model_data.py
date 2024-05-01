@@ -28,6 +28,8 @@ class ModelData:
     total_size_of_frozen_weight_small_tensors: int
     persistent_massive_params_chunk_size: int
     repeated_activation_tensor_scaling_factor: int
+    large_temporary_tensors_in_backward_pass: int
+    backward_pass_spike_temporary_tensors_scaling_factor: int
     Schema: ClassVar[Type[Schema]] = Schema
 
 
