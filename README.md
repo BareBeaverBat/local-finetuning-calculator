@@ -1,6 +1,8 @@
 # local-finetuning-calculator
 final project for OSU CSE6431
 
+Report on project findings can be found [here](vram_predictor_report.pdf) 
+
 ## General setup
 1. Install cuda from nvidia website (neither tool nor experiments will work for non-Nvidia GPU's, or if your computer doesn't have CUDA set up)
 
